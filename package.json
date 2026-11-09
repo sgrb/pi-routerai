@@ -1,0 +1,29 @@
+{
+	"name": "pi-routerai",
+	"version": "0.1.0",
+	"description": "RouterAI (routerai.ru) provider for Pi: dynamic model catalog, ruble prices, and account balance in the footer",
+	"type": "module",
+	"license": "MIT",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"routerai",
+		"provider"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-ai": "^1.4.0",
+		"@earendil-works/pi-coding-agent": "^1.4.0"
+	},
+	"scripts": {
+		"test": "node --test --experimental-strip-types \"test/*.test.ts\""
+	}
+}
