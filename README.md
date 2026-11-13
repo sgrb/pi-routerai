@@ -81,7 +81,8 @@ usual `/model` search, scoping and cycling all work unchanged.
 
 Each alias carries the provider's own price, context window and output cap — a
 provider that caps output at 4K reports 4K, not the catalog's default. Aliases are
-sorted by input price, so the cheapest provider appears first.
+sorted by **output price**, since output tokens dominate the cost of a long agent
+session — the cheapest-to-answer provider appears first.
 
 `/model` renders the selected entry's `name`, so every model and alias shows its
 details line there:

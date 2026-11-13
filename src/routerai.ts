@@ -376,7 +376,8 @@ export function toProviderAliases(
 			samplingParams: { model: model.id, provider: { only: [endpoint.tag] } },
 		});
 	}
-	aliases.sort((a, b) => a.cost.input - b.cost.input || a.id.localeCompare(b.id));
+	// Output price decides: it dominates the real cost of a long agent session.
+	aliases.sort((a, b) => a.cost.output - b.cost.output || a.id.localeCompare(b.id));
 	return aliases;
 }
 
@@ -394,7 +395,12 @@ export function toPiModels(
 ): PiChatModel[] {
 	const seen = new Set<string>();
 	const models: PiChatModel[] = [];
-	for (const entry of catalog) {
+	// Sort the catalog, not the result: an alias must stay grouped under its base
+	// model and keep the output-price order `toProviderAliases` produced. Sorting
+	// the finished list by id would scramble that. Pi's `/model` sorts by provider
+	// only, so it preserves the relative order we return here.
+	const ordered = [...catalog].sort((a, b) => a.id.localeCompare(b.id));
+	for (const entry of ordered) {
 		const mapped = toPiModel(entry, options);
 		if (!mapped) continue;
 		if (!seen.has(mapped.id)) {
@@ -417,6 +423,5 @@ export function toPiModels(
 			models.push(alias);
 		}
 	}
-	models.sort((a, b) => a.id.localeCompare(b.id));
 	return models;
 }

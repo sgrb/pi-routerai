@@ -255,18 +255,21 @@ test("uses the provider's own limits instead of the catalog defaults", () => {
 	assert.equal(alias.maxTokens, 4_096, "a provider capping output at 4k must not get 16k");
 });
 
-test("aliases are ordered by input price so cheap providers come first", () => {
+test("aliases are ordered by output price, not input price", () => {
+	const units = { prompt: "token", completion: "token" };
 	const aliases = toProviderAliases(
 		model(),
 		[
-			endpoint({ tag: "pricey", pricing: { prompt: 0.000009, completion: 0.000009 }, pricing_units: { prompt: "token", completion: "token" } }),
-			endpoint({ tag: "cheap", pricing: { prompt: 0.0000001, completion: 0.0000002 }, pricing_units: { prompt: "token", completion: "token" } }),
+			// Cheapest input, but the priciest output: must NOT come first.
+			endpoint({ tag: "cheap-in-expensive-out", pricing: { prompt: 0.0000001, completion: 0.000009 }, pricing_units: units }),
+			endpoint({ tag: "dear-in-cheap-out", pricing: { prompt: 0.000009, completion: 0.0000002 }, pricing_units: units }),
 		],
 		{ baseUrl },
 	);
 	assert.deepEqual(
 		aliases.map((entry) => entry.id),
-		["vendor/chat-1@cheap", "vendor/chat-1@pricey"],
+		["vendor/chat-1@dear-in-cheap-out", "vendor/chat-1@cheap-in-expensive-out"],
+		"output tokens dominate the cost of a long session",
 	);
 });
 
@@ -280,4 +283,26 @@ test("catalog mapping adds aliases only for models with endpoints", () => {
 
 	const withoutEndpoints = toPiModels([model()], { baseUrl });
 	assert.equal(withoutEndpoints.length, 1);
+});
+
+test("aliases stay grouped under their base model in output-price order", () => {
+	const units = { prompt: "token", completion: "token" };
+	const cheapOut = endpoint({ tag: "cheap-out", pricing: { prompt: 0.000009, completion: 0.0000002 }, pricing_units: units });
+	const dearOut = endpoint({ tag: "dear-out", pricing: { prompt: 0.0000001, completion: 0.000009 }, pricing_units: units });
+	const mapped = toPiModels(
+		[model({ id: "z/base" }), model({ id: "a/base" })],
+		{
+			baseUrl,
+			endpoints: new Map([
+				["z/base", [dearOut, cheapOut]],
+				["a/base", [dearOut, cheapOut]],
+			]),
+		},
+	);
+	// Base models alphabetical, and each one's aliases directly after it, cheapest
+	// output first — a global id sort would interleave "a/base@*" and "z/base@*".
+	assert.deepEqual(
+		mapped.map((entry) => entry.id),
+		["a/base", "a/base@cheap-out", "a/base@dear-out", "z/base", "z/base@cheap-out", "z/base@dear-out"],
+	);
 });
