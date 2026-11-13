@@ -64,6 +64,42 @@ A model that reasons but exposes no `reasoning_effort` gets every level except
 Prices with a non-token unit (`request`, `second`, `image`) are reported as zero
 rather than as a misleading rate.
 
+### Provider selection (`@tag` aliases)
+
+RouterAI balances each model across several upstream providers and lets a request
+pin one with a `provider` object. This extension exposes that as a model id suffix:
+
+```
+routerai/deepseek/deepseek-chat@deepinfra
+routerai/deepseek/deepseek-chat@groq
+routerai/deepseek/deepseek-chat            ← RouterAI picks (load + price)
+```
+
+Aliases are created only for models served by **two or more live providers**
+(`status === 0`). About 1,175 aliases are generated across the catalog, so the
+usual `/model` search, scoping and cycling all work unchanged.
+
+Each alias carries the provider's own price, context window and output cap — a
+provider that caps output at 4K reports 4K, not the catalog's default. Aliases are
+sorted by input price, so the cheapest provider appears first.
+
+`/model` renders the selected entry's `name`, so every model and alias shows its
+details line there:
+
+```
+DeepInfra · ₽3.24/₽15.10 за 1M · 131K ctx · us
+```
+
+`@tag` ids do not exist upstream, so the extension rewrites the request through
+`samplingParams`: `model` becomes the plain id and `provider.only` pins the
+provider. `samplingParams` is merged last into the request body, which also covers
+compaction and cache-warming requests that never pass through Pi's
+`before_provider_request` hook.
+
+Trade-off: alias metadata is a snapshot from the last catalog refresh (6-hour
+cache). Prices and availability on RouterAI change faster than that; run
+`pi update --models` or delete `models-store.json` to refresh.
+
 ### Balance status
 
 `GET /v1/credits` is polled on session start, after each settled turn, and every
@@ -81,11 +117,11 @@ models are loaded.
   so per-request routing (priority, flex) can differ from the catalog rate.
 - `maxTokens` is capped at 16384 to stay well inside every model's window;
   RouterAI rejects a `max_tokens` value that exceeds the model's context length.
-- If another extension (for example `pi-custom-providers`) also registers a
-  `routerai` provider, remove it from `~/.pi/agent/custom-providers.json` — its
-  persisted catalog has no prices and 128K/4096 placeholder limits.
-  This extension detects such a placeholder catalog and replaces it on the next
-  refresh.
+- Another extension registering the same provider id wins if it loads later. If
+  you see 128K/4096 limits and zero prices, something else owns `routerai`:
+  remove it from `~/.pi/agent/custom-providers.json` and from `packages` in
+  `~/.pi/agent/settings.json`. A catalog with zero prices is detected as
+  placeholder metadata and replaced on the next refresh.
 
 ## Development
 

@@ -19,15 +19,20 @@ import {
 	DEFAULT_BASE_URL,
 	fetchCatalog,
 	fetchCredits,
+	fetchEndpoints,
 	fetchKeyInfo,
+	isChatModel,
 	PROVIDER_ID,
 	PROVIDER_NAME,
 	toPiModels,
+	type RouterAIEndpoint,
 } from "./src/routerai.ts";
 
 /** Footer status key. Sorted alphabetically by Pi, so keep it stable. */
 const STATUS_KEY = "routerai-balance";
 const BALANCE_INTERVAL_MS = 5 * 60 * 1000;
+/** Parallel `/endpoints` requests during catalog discovery. */
+const ENDPOINT_CONCURRENCY = 12;
 
 function baseUrl(): string {
 	const configured = process.env.ROUTERAI_BASE_URL?.trim();
@@ -71,6 +76,36 @@ function publishModels(context: RefreshModelsContext, models: ProviderModelConfi
 }
 
 /**
+ * Per-provider prices and limits for every chat model, so `@tag` aliases can carry
+ * their own cost. Requests run concurrently; a model whose endpoints call fails is
+ * left without aliases instead of dropping it from the catalog.
+ */
+async function gatherEndpoints(
+	models: readonly { id: string }[],
+	url: string,
+	signal: AbortSignal,
+): Promise<Map<string, RouterAIEndpoint[]>> {
+	const result = new Map<string, RouterAIEndpoint[]>();
+	const queue = [...models];
+
+	const drain = async (): Promise<void> => {
+		for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+			if (signal.aborted) return;
+			try {
+				const endpoints = await fetchEndpoints(url, next.id, signal);
+				if (endpoints.length > 0) result.set(next.id, endpoints);
+			} catch {
+				// One unreachable model must not fail the whole refresh.
+			}
+		}
+	};
+
+	const workerCount = Math.min(ENDPOINT_CONCURRENCY, queue.length);
+	await Promise.all(Array.from({ length: workerCount }, drain));
+	return result;
+}
+
+/**
  * Discovery request. Pi loads extensions with network access disabled so startup
  * never blocks on the network, which leaves `context.allowNetwork` false on the
  * first pass. The RouterAI catalog is public and cheap to fetch, so the first
@@ -82,7 +117,9 @@ function startDiscovery(context: RefreshModelsContext, signal: AbortSignal): Pro
 	discovery = (async () => {
 		try {
 			const fetched = await fetchCatalog(url, signal);
-			const models = toPiModels(fetched, { provider: PROVIDER_ID, baseUrl: url });
+			const chat = fetched.filter(isChatModel);
+			const endpoints = await gatherEndpoints(chat, url, signal);
+			const models = toPiModels(fetched, { provider: PROVIDER_ID, baseUrl: url, endpoints });
 			if (models.length > 0) await publishModels(context, models);
 		} catch {
 			// Discovery is opportunistic; a failure keeps the previous catalog.

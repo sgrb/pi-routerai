@@ -7,6 +7,8 @@ import {
 	isChatModel,
 	toPiModel,
 	toPiModels,
+	toProviderAliases,
+	type RouterAIEndpoint,
 	type RouterAIModel,
 } from "../src/routerai.ts";
 
@@ -165,4 +167,117 @@ test("surfaces HTTP failures instead of silently returning nothing", async () =>
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
+});
+// ── Provider aliases ─────────────────────────────────────────────────────────
+
+function endpoint(overrides: Partial<RouterAIEndpoint> = {}): RouterAIEndpoint {
+	return {
+		tag: "groq",
+		provider_name: "Groq",
+		status: 0,
+		context_length: 131_072,
+		max_completion_tokens: 32_768,
+		pricing: { prompt: 0.0000008, completion: 0.0000032 },
+		pricing_units: { prompt: "token", completion: "token" },
+		...overrides,
+	};
+}
+
+test("creates one alias per serving provider with that provider's price", () => {
+	const aliases = toProviderAliases(model(), [endpoint(), endpoint({ tag: "deepinfra", provider_name: "DeepInfra" })], {
+		baseUrl,
+	});
+	assert.equal(aliases.length, 2);
+	const groq = aliases.find((entry) => entry.id.endsWith("@groq"));
+	assert.ok(groq);
+	assert.equal(groq.id, "vendor/chat-1@groq");
+	assert.ok(Math.abs(groq.cost.input - 0.8) < 1e-12, "0.8 RUB per 1M");
+	assert.ok(Math.abs(groq.cost.output - 3.2) < 1e-12);
+});
+
+test("alias keeps the base model id and pins the provider in samplingParams", () => {
+	const [alias] = toProviderAliases(model(), [endpoint(), endpoint({ tag: "other" })], { baseUrl });
+	assert.ok(alias);
+	// RouterAI does not know the `@tag` id, so the request must be rewritten.
+	assert.deepEqual(alias.samplingParams, {
+		model: "vendor/chat-1",
+		provider: { only: ["groq"] },
+	});
+});
+
+test("alias name carries provider, ruble price, context and country for /model", () => {
+	const [alias] = toProviderAliases(model(), [endpoint({ countries: ["us"] }), endpoint({ tag: "other" })], {
+		baseUrl,
+	});
+	assert.ok(alias);
+	assert.match(alias.name, /Groq/);
+	assert.match(alias.name, /₽0\.800\/₽3\.20/);
+	assert.match(alias.name, /131K ctx/);
+	assert.match(alias.name, /us/);
+});
+
+test("skips aliases when only one provider serves the model", () => {
+	assert.deepEqual(toProviderAliases(model(), [endpoint()], { baseUrl }), []);
+	assert.deepEqual(toProviderAliases(model(), [], { baseUrl }), []);
+});
+
+test("skips providers RouterAI is not serving", () => {
+	// Two providers, one of them down: only one is a real choice, so RouterAI's
+	// default routing already lands there and an alias would just be noise.
+	const oneServing = toProviderAliases(
+		model(),
+		[endpoint(), endpoint({ tag: "siliconflow", status: -2 })],
+		{ baseUrl },
+	);
+	assert.deepEqual(oneServing, []);
+
+	// A down provider must never be offered even when others are fine.
+	const mixed = toProviderAliases(
+		model(),
+		[endpoint(), endpoint({ tag: "groq-b" }), endpoint({ tag: "siliconflow", status: -2 })],
+		{ baseUrl },
+	);
+	assert.deepEqual(
+		mixed.map((entry) => entry.id),
+		["vendor/chat-1@groq", "vendor/chat-1@groq-b"],
+	);
+	assert.ok(!mixed.some((entry) => entry.id.includes("siliconflow")));
+});
+
+test("uses the provider's own limits instead of the catalog defaults", () => {
+	const [alias] = toProviderAliases(
+		model(),
+		[endpoint({ context_length: 32_768, max_completion_tokens: 4_096 }), endpoint({ tag: "other" })],
+		{ baseUrl },
+	);
+	assert.ok(alias);
+	assert.equal(alias.contextWindow, 32_768);
+	assert.equal(alias.maxTokens, 4_096, "a provider capping output at 4k must not get 16k");
+});
+
+test("aliases are ordered by input price so cheap providers come first", () => {
+	const aliases = toProviderAliases(
+		model(),
+		[
+			endpoint({ tag: "pricey", pricing: { prompt: 0.000009, completion: 0.000009 }, pricing_units: { prompt: "token", completion: "token" } }),
+			endpoint({ tag: "cheap", pricing: { prompt: 0.0000001, completion: 0.0000002 }, pricing_units: { prompt: "token", completion: "token" } }),
+		],
+		{ baseUrl },
+	);
+	assert.deepEqual(
+		aliases.map((entry) => entry.id),
+		["vendor/chat-1@cheap", "vendor/chat-1@pricey"],
+	);
+});
+
+test("catalog mapping adds aliases only for models with endpoints", () => {
+	const withEndpoints = toPiModels([model()], {
+		baseUrl,
+		endpoints: new Map([["vendor/chat-1", [endpoint(), endpoint({ tag: "other" })]]]),
+	});
+	assert.equal(withEndpoints.length, 3, "one base model plus two aliases");
+	assert.ok(withEndpoints[0]?.name.includes("₽"), "the base entry also gets the price line");
+
+	const withoutEndpoints = toPiModels([model()], { baseUrl });
+	assert.equal(withoutEndpoints.length, 1);
 });
